@@ -1,0 +1,13 @@
+Create and activate your own venv (example for Python on Windows):
+
+Create:
+python -m venv .venv
+
+Activate (cmd.exe):
+.venv\Scripts\activate
+
+Install dependencies inside that venv:
+python -m pip install -r requirements.txt
+
+Run the app:
+python lab_access\main.py
