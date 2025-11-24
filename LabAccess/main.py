@@ -3,6 +3,7 @@ from tkinter import ttk, simpledialog, messagebox
 from datetime import datetime
 import cv2
 from PIL import Image, ImageTk
+import sqlite3
 
 ADMIN_PASSCODE = "1234"          # TODO: change for real use
 CAMERA_INDEX = 0                
@@ -75,6 +76,111 @@ class AccessApp(tk.Tk):
             command=self.show_admin_login,
             width=25,
         ).pack(pady=10, ipady=5)
+    
+    # ---------- database functions ----------
+
+    def set_tables(self):
+        conn = sqlite3.connect("thedatabase.db")
+        cursor = conn.cursor()
+        cursor.execute("CREATE TABLE IF NOT EXISTS Lab (lab_id INTEGER PRIMARY KEY, lab_name TEXT, facial_id TEXT)")
+        cursor.execute("CREATE TABLE IF NOT EXISTS LabMember (member_id INTEGER PRIMARY KEY, first_name TEXT, last_name TEXT, facial_id BLOB, lab_id TEXT)")
+        cursor.execute("CREATE TABLE IF NOT EXISTS LabAccess (accessID INTEGER PRIMARY KEY, member_id INTEGER, lab_id INTEGER, time_stamp TEXT, access_type TEXT, result TEXT, FOREIGN KEY(member_id) REFERENCES LabMember(member_id), FOREIGN KEY(lab_id) REFERENCES Lab(lab_id))")
+        conn.commit()
+        conn.close()
+
+    def connect_db(self, db_name):
+        conn = sqlite3.connect(db_name)
+        return conn
+    
+    def fetch_data(self, conn, table_name):
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT * FROM {table_name}")
+        data = cursor.fetchall()
+        column_names = [description[0] for description in cursor.description]
+        return data, column_names
+    
+    def edit_record_view(self,event):
+        tree=event.widget
+        selected = tree.selection()
+
+        if not selected:
+            return
+        
+        values = tree.item(selected[0], "values")
+        self.current_edit_item = selected[0]
+        self.current_edit_values = values
+
+        win = tk.Toplevel(self)
+        win.title("Edit Record")
+        win.geometry("350x400")
+        win.configure(bg="#101018")
+
+        tk.Label(win, text="Edit Record", fg="white", bg="#101018", font=("Helvetica", 14)).pack(pady=10)
+
+        self.edit_entries = []
+        self.edit_column_names = self.last_column_names
+
+        print(self.edit_column_names)
+
+        for col, val in zip(self.edit_column_names, values):
+            tk.Label(win, text=col, fg="white", bg="#101018").pack(pady=5)
+            entry = tk.Entry(win)
+            entry.insert(0,val)
+
+            print(self.primary_key_column)
+
+            if col == self.primary_key_column:
+                entry.config(state="readonly")
+            
+            entry.pack(pady=5)
+            self.edit_entries.append(entry)
+        
+        tk.Button(win, text="Save", command=lambda: self.save_record_changes(win)).pack(pady=20)
+
+    def save_record_changes(self,window):
+        conn = self.connect_db("thedatabase.db")
+        cursor = conn.cursor()
+
+        new_values = [entry.get() for entry in self.edit_entries]
+
+        primary_key_col = self.primary_key_column
+        pk_idx = self.edit_column_names.index(primary_key_col)
+        primary_key_value = self.current_edit_values[pk_idx]
+
+        editable_columns = [col for col in self.edit_column_names if col != primary_key_col]
+        set_clause = ", ".join([f"{col} = ?" for col in editable_columns])
+
+        print(self.last_table_name)
+        print(set_clause)
+        print(primary_key_col)
+        sql = f"UPDATE {self.last_table_name} SET {set_clause} WHERE {primary_key_col} = ?"
+
+        print("SQL:",sql)
+        editable_values =[
+            new_values[self.edit_column_names.index(col)]
+            for col in editable_columns
+        ]
+        cursor.execute(sql, editable_values + [primary_key_value])
+        conn.commit()
+        conn.close()
+
+        window.destroy()
+        self.show_admin_panel()
+    
+    def display_data_in_treeview(self,root, data, column_names):
+        tree = ttk.Treeview(root, columns=column_names, show='headings')
+
+        for col in column_names:
+            tree.heading(col, text=col.replace('_', ' ').title())
+            tree.column(col, width=100, anchor='center')
+        
+        for row in data:
+            tree.insert("","end", values=row)
+        
+        tree.pack(pady=10)
+
+        tree.bind("<Double-1>", self.edit_record_view)
+        return tree
 
     # ---------- admin / teacher flow ----------
 
@@ -104,10 +210,30 @@ class AccessApp(tk.Tk):
             justify="center",
         ).pack(pady=40)
 
+        conn = self.connect_db("thedatabase.db")
+        self.set_tables()
+        data, column_names = self.fetch_data(conn, "LabMember")
+
+        conn.close()
+        self.primary_key_column = "member_id"
+        self.last_column_names = column_names
+        self.last_table_name = "LabMember"
+    
+        tree_container = tk.Frame(frame, bg="#101018")
+        tree_container.pack(pady=10)
+        self.display_data_in_treeview(tree_container, data, column_names)
+
+        button_row = tk.Frame(frame,bg="#101018")
+        button_row.pack(pady= 20)
+        ttk.Button(button_row, text="Add New User").pack(side="left",pady=20)
+        ttk.Button(button_row, text="Check Access Logs", command=self.show_access_log).pack(side="left",pady=20)
+
+        ttk.Button(frame, text="Back", command=self.show_home).pack(pady=30)
+
         tk.Label(
             frame,
             text=(
-                "For Phase 1, this screen can simply state that\n"
+                "For 4, this screen can simply state that\n"
                 "only authorized teachers may register new faces.\n\n"
                 "Later, you can add controls here to:\n"
                 "• Capture and store new faces and in what labs they have access to\n"
@@ -119,8 +245,41 @@ class AccessApp(tk.Tk):
             bg="#101018",
             justify="left",
         ).pack()
+    
+    # ---------- access logs ----------
 
-        ttk.Button(frame, text="Back", command=self.show_home).pack(pady=30)
+    def show_access_log(self):
+        self.clear_screen()
+
+        frame = tk.Frame(self, bg="#101018")
+        frame.pack(expand=True, fill="both", padx=20, pady=20)
+
+        tk.Label(
+            frame,
+            text="Access Logs",
+            font=("Helvetica", 14, "bold"),
+            fg="white",
+            bg="#101018",
+            justify="center",
+        ).pack(pady=40)
+
+        conn = self.connect_db("thedatabase.db")
+        data, column_names = self.fetch_data(conn, "LabAccess")
+
+        conn.close()
+        self.primary_key_column = "accessID"
+        self.last_column_names = column_names
+        self.last_table_name = "LabAccess"
+    
+        tree_container = tk.Frame(frame, bg="#101018")
+        tree_container.pack(pady=10)
+        self.display_data_in_treeview(tree_container, data, column_names)
+
+        button_row = tk.Frame(frame,bg="#101018")
+        button_row.pack(pady= 20)
+
+        ttk.Button(frame, text="Back", command=self.show_admin_panel).pack(pady=30)
+        ttk.Button(frame, text="Home", command=self.show_home).pack(pady=30)
 
     # ---------- scan / access flow ----------
 
