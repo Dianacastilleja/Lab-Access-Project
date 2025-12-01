@@ -4,6 +4,10 @@ from datetime import datetime
 import cv2
 from PIL import Image, ImageTk
 import sqlite3
+import mediapipe as mp
+from functools import partial
+
+import facial_recognition as fr
 
 ADMIN_PASSCODE = "1234"          # TODO: change for real use
 CAMERA_INDEX = 0                
@@ -66,7 +70,7 @@ class AccessApp(tk.Tk):
         ttk.Button(
             container,
             text="Scan to Enter Lab",
-            command=self.show_scan_screen,
+            command=self.show_lab_selection,
             width=25,
         ).pack(pady=10, ipady=5)
 
@@ -83,7 +87,7 @@ class AccessApp(tk.Tk):
         conn = sqlite3.connect("thedatabase.db")
         cursor = conn.cursor()
         cursor.execute("CREATE TABLE IF NOT EXISTS Lab (lab_id INTEGER PRIMARY KEY, lab_name TEXT, facial_id TEXT)")
-        cursor.execute("CREATE TABLE IF NOT EXISTS LabMember (member_id INTEGER PRIMARY KEY, first_name TEXT, last_name TEXT, facial_id BLOB, lab_id TEXT)")
+        cursor.execute("CREATE TABLE IF NOT EXISTS LabMember (member_id INTEGER PRIMARY KEY, first_name TEXT, last_name TEXT, facial_id BLOB, lab_id INTEGER)")
         cursor.execute("CREATE TABLE IF NOT EXISTS LabAccess (accessID INTEGER PRIMARY KEY, member_id INTEGER, lab_id INTEGER, time_stamp TEXT, access_type TEXT, result TEXT, FOREIGN KEY(member_id) REFERENCES LabMember(member_id), FOREIGN KEY(lab_id) REFERENCES Lab(lab_id))")
         conn.commit()
         conn.close()
@@ -183,6 +187,29 @@ class AccessApp(tk.Tk):
         return tree
 
     # ---------- admin / teacher flow ----------
+    def show_lab_selection(self):
+        code = simpledialog.askstring(
+            "Lab Selection", "Enter lab:"
+        )
+        conn = self.connect_db("thedatabase.db")
+        cursor = conn.cursor()
+
+        cursor.execute('''SELECT lab_id, lab_name FROM LAB''')
+  
+        output = cursor.fetchall()
+
+        for row in output:
+            if row[1] == code:
+                self.show_scan_screen(row[0])
+                conn.commit()
+                conn.close()
+                return
+        conn.commit()
+        conn.close()
+
+        if not code:
+            return
+        messagebox.showerror("Access Denied", "Invalid lab.")
 
     def show_admin_login(self):
         code = simpledialog.askstring(
@@ -203,7 +230,7 @@ class AccessApp(tk.Tk):
 
         tk.Label(
             frame,
-            text="Teacher Panel\n(Future: view/edit lab database)",
+            text="Teacher Panel",
             font=("Helvetica", 14, "bold"),
             fg="white",
             bg="#101018",
@@ -225,26 +252,58 @@ class AccessApp(tk.Tk):
 
         button_row = tk.Frame(frame,bg="#101018")
         button_row.pack(pady= 20)
-        ttk.Button(button_row, text="Add New User").pack(side="left",pady=20)
-        ttk.Button(button_row, text="Check Access Logs", command=self.show_access_log).pack(side="left",pady=20)
+        ttk.Button(button_row, text="Add New User", command=self.register_student_screen).pack(side="left",pady=20)
+        #ttk.Button(button_row, text="Check Access Logs", command=self.show_access_log).pack(side="left",pady=20)
 
         ttk.Button(frame, text="Back", command=self.show_home).pack(pady=30)
 
-        tk.Label(
-            frame,
-            text=(
-                "For 4, this screen can simply state that\n"
-                "only authorized teachers may register new faces.\n\n"
-                "Later, you can add controls here to:\n"
-                "• Capture and store new faces and in what labs they have access to\n"
-                "• Remove faces\n"
-                "• Review access logs"
-            ),
-            font=("Helvetica", 10),
-            fg="#b0b0c0",
-            bg="#101018",
-            justify="left",
-        ).pack()
+        # tk.Label(
+        #     frame,
+        #     text=(
+        #         "For 4, this screen can simply state that\n"
+        #         "only authorized teachers may register new faces.\n\n"
+        #         "Later, you can add controls here to:\n"
+        #         "• Capture and store new faces and in what labs they have access to\n"
+        #         "• Remove faces\n"
+        #         "• Review access logs"
+        #     ),
+        #     font=("Helvetica", 10),
+        #     fg="#b0b0c0",
+        #     bg="#101018",
+        #     justify="left",
+        # ).pack()
+
+    # ---------- registration ----------
+    def show_student_registration(self, blob):
+        first_name = simpledialog.askstring(
+            "First Name", "Enter student's first name:"
+        )
+        if first_name is None or first_name == '':
+            messagebox.showerror("Error", "Invalid first name.")
+            return
+        last_name = simpledialog.askstring(
+            "Last Name", "Enter student's last name:"
+        )
+        if last_name is None or last_name == '':
+            messagebox.showerror("Error", "Invalid last name.")
+            return
+        lab_id = simpledialog.askstring(
+            "Lab ID", "Enter student's lab's ID:"
+        )
+        if not lab_id.isdigit:
+            messagebox.showerror("Error", "Invalid lab ID.")
+            return
+
+        conn = self.connect_db("thedatabase.db")
+        cursor = conn.cursor()
+
+        output = cursor.fetchall()
+
+        cursor.execute("INSERT INTO LabMember (first_name,last_name,facial_id,lab_id) VALUES (?,?,?,?)",
+                       (first_name,last_name,blob,int(lab_id)))
+    
+        conn.commit()
+        conn.close()
     
     # ---------- access logs ----------
 
@@ -315,7 +374,7 @@ class AccessApp(tk.Tk):
         return False
 
 
-    def show_scan_screen(self):
+    def show_scan_screen(self,lab_id):
         self.clear_screen()
 
         # open camera when entering scan screen
@@ -435,10 +494,139 @@ class AccessApp(tk.Tk):
         ttk.Button(
             btn_row,
             text="Simulate Scan",
-            command=self.simulate_scan_result,
+            command=partial(self.simulate_scan_result, lab_id),
         ).pack(side="left")
 
         ttk.Button(btn_row, text="Back", command=self.back_from_scan).pack(side="right")
+
+        # start updating time and camera
+        self.update_time()
+        self.update_camera()
+    
+    def register_student_screen(self):
+        self.clear_screen()
+
+        # open camera when entering scan screen
+        if not self.open_camera():
+            messagebox.showerror(
+                "Camera Error",
+                f"Could not open camera at index {CAMERA_INDEX}. "
+                "Check camera permissions or change CAMERA_INDEX.",
+            )
+            self.show_home()
+            return
+
+        # top bar
+        top = tk.Frame(self, bg="#1a1a26")
+        top.pack(fill="x")
+
+        tk.Label(
+            top,
+            text="Face recognition access registration system",
+            font=("Helvetica", 11, "bold"),
+            fg="#e0e0ff",
+            bg="#1a1a26",
+        ).pack(side="left", padx=10, pady=8)
+
+        tk.Label(
+            top,
+            text="Temperature: --.-  Normal",
+            font=("Helvetica", 10),
+            fg="#a0ffa0",
+            bg="#1a1a26",
+        ).pack(side="right", padx=10)
+
+        # camera area
+        center = tk.Frame(self, bg="#101018")
+        center.pack(expand=True, fill="both", pady=(10, 0))
+
+        camera_container = tk.Frame(
+            center,
+            bg="#000000",
+            highlightthickness=2,
+            highlightbackground="#444444",
+        )
+        camera_container.pack(padx=30, pady=10, fill="both", expand=True)
+
+        self.camera_frame = tk.Label(
+            camera_container,
+            fg="#aaaaaa",
+            bg="#000000",
+            font=("Helvetica", 12),
+            justify="center",
+        )
+        self.camera_frame.pack(expand=True, fill="both")
+
+        # bottom panel
+        bottom = tk.Frame(self, bg="#101018")
+        bottom.pack(fill="x", pady=(5, 15))
+
+        # line 1: lab and time
+        info_row = tk.Frame(bottom, bg="#101018")
+        info_row.pack(fill="x", padx=20, pady=(0, 5))
+
+        self.lab_label = tk.Label(
+            info_row,
+            text=f"{self.current_building} – Lab {self.current_room}",
+            font=("Helvetica", 11, "bold"),
+            fg="#e0e0ff",
+            bg="#101018",
+        )
+        self.lab_label.pack(side="left")
+
+        self.time_label = tk.Label(
+            info_row,
+            text="--:--",
+            font=("Helvetica", 11),
+            fg="#e0e0ff",
+            bg="#101018",
+        )
+        self.time_label.pack(side="right")
+
+        # line 2: preview + status
+        preview_row = tk.Frame(bottom, bg="#101018")
+        preview_row.pack(fill="x", padx=20, pady=(5, 10))
+
+        preview_container = tk.Frame(
+            preview_row,
+            bg="#000000",
+            width=80,
+            height=80,
+            highlightthickness=2,
+            highlightbackground="#444444",
+        )
+        preview_container.pack(side="left")
+        preview_container.pack_propagate(False)
+
+        self.preview_frame = tk.Label(
+            preview_container,
+            fg="#aaaaaa",
+            bg="#000000",
+            font=("Helvetica", 9),
+        )
+        self.preview_frame.pack(expand=True, fill="both")
+
+        self.status_label = tk.Label(
+            preview_row,
+            text="Please look at the camera…",
+            font=("Helvetica", 11),
+            fg="#e0e0ff",
+            bg="#101018",
+            justify="left",
+        )
+        self.status_label.pack(side="left", padx=15)
+
+        # line 3: buttons
+        btn_row = tk.Frame(bottom, bg="#101018")
+        btn_row.pack(fill="x", padx=20, pady=(5, 0))
+
+        ttk.Button(
+            btn_row,
+            text="Register Face",
+            command=self.simulate_scan_result_registration,
+        ).pack(side="left")
+
+        ttk.Button(btn_row, text="Back", command=self.back_from_scan_registration).pack(side="right")
 
         # start updating time and camera
         self.update_time()
@@ -450,6 +638,13 @@ class AccessApp(tk.Tk):
             print("[INFO] Camera released from back button.")
         self.cap = None
         self.show_home()
+    
+    def back_from_scan_registration(self):
+        if self.cap is not None and self.cap.isOpened():
+            self.cap.release()
+            print("[INFO] Camera released from back button.")
+        self.cap = None
+        self.show_admin_panel()
 
     # ---------- time and camera updates ----------
 
@@ -495,7 +690,7 @@ class AccessApp(tk.Tk):
 
     # ---------- recognition integration ----------
 
-    def simulate_scan_result(self):
+    def simulate_scan_result(self,lab_id):
         """
         For now:
         - Ensure we have a frame from the camera.
@@ -511,18 +706,37 @@ class AccessApp(tk.Tk):
 
         # Optional: save the frame so Aiden can inspect it or test his model.
         # This writes a BGR image as captured by OpenCV.
-        cv2.imwrite("last_scan_frame.jpg", self.current_frame)
-
-        name = simpledialog.askstring(
-            "Simulated Scan",
-            "Recognized person’s name (for now, type it):",
-        )
-        if not name:
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=self.current_frame)
+        result = fr.is_face_recognized(mp_image,lab_id)
+        if result[0]:
+            self.handle_recognition_result(result[1])
+        else:
+            self.handle_non_recognition_result()
+    
+        if not result:
             return
 
-        self.handle_recognition_result(name.strip())
+    def simulate_scan_result_registration(self):
+        if self.current_frame is None:
+            messagebox.showwarning(
+                "No frame",
+                "No camera frame available yet. Please wait a moment and try again.",
+            )
+            return
 
+        # Optional: save the frame so Aiden can inspect it or test his model.
+        # This writes a BGR image as captured by OpenCV.
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=self.current_frame)
+        result = fr.register_face(mp_image)
 
+        if result:
+            self.show_student_registration(result)
+
+        # if not result[0]:
+        #     return
+
+        self.handle_registration_result('')
+    
     def handle_recognition_result(self, name: str):
         """
         Called whenever a face has been recognized for the current lab.
@@ -551,6 +765,93 @@ class AccessApp(tk.Tk):
             f"Welcome To the Lab {name} !"
             if first_time
             else f"Welcome Back {name} !"
+        )
+
+        if self.status_label is not None:
+            try:
+                self.status_label.config(text=msg, fg="#00ff00")
+            except tk.TclError:
+                pass
+        
+    def handle_registration_result(self, name: str):
+        key = (self.current_building, self.current_room, name)
+        previous_visits = self.visit_counts.get(key, 0)
+        self.visit_counts[key] = previous_visits + 1
+
+        first_time = previous_visits == 0
+
+        # border turns green
+        for widget in (self.camera_frame, self.preview_frame):
+            if widget is not None:
+                parent = widget.master
+                try:
+                    parent.configure(
+                        highlightthickness=3,
+                        highlightbackground="#00ff00",
+                    )
+                except tk.TclError:
+                    pass
+
+        msg = (
+            f"Welcome To the Lab!"
+        )
+
+        if self.status_label is not None:
+            try:
+                self.status_label.config(text=msg, fg="#00ff00")
+            except tk.TclError:
+                pass
+        
+    def handle_non_recognition_result(self, name: str):
+        key = (self.current_building, self.current_room, name)
+        previous_visits = self.visit_counts.get(key, 0)
+        self.visit_counts[key] = previous_visits + 1
+
+        first_time = previous_visits == 0
+
+        # border turns green
+        for widget in (self.camera_frame, self.preview_frame):
+            if widget is not None:
+                parent = widget.master
+                try:
+                    parent.configure(
+                        highlightthickness=3,
+                        highlightbackground="#ff0000",
+                    )
+                except tk.TclError:
+                    pass
+
+        msg = (
+            f"Face not recognized!"
+        )
+
+        if self.status_label is not None:
+            try:
+                self.status_label.config(text=msg, fg="#ff0000")
+            except tk.TclError:
+                pass
+        
+    def handle_registration_result(self, name: str):
+        key = (self.current_building, self.current_room, name)
+        previous_visits = self.visit_counts.get(key, 0)
+        self.visit_counts[key] = previous_visits + 1
+
+        first_time = previous_visits == 0
+
+        # border turns green
+        for widget in (self.camera_frame, self.preview_frame):
+            if widget is not None:
+                parent = widget.master
+                try:
+                    parent.configure(
+                        highlightthickness=3,
+                        highlightbackground="#ff0000",
+                    )
+                except tk.TclError:
+                    pass
+
+        msg = (
+            f"Welcome To the Lab!"
         )
 
         if self.status_label is not None:
