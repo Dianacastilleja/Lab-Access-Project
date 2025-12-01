@@ -711,7 +711,7 @@ class AccessApp(tk.Tk):
         if result[0]:
             self.handle_recognition_result(result[1])
         else:
-            self.handle_non_recognition_result()
+            self.handle_non_recognition_result('')
     
         if not result:
             return
@@ -845,7 +845,7 @@ class AccessApp(tk.Tk):
                 try:
                     parent.configure(
                         highlightthickness=3,
-                        highlightbackground="#ff0000",
+                        highlightbackground="#00ff00",
                     )
                 except tk.TclError:
                     pass
